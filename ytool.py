@@ -3,6 +3,24 @@ import pickle
 import time
 
 
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
 def cluster_acc(y_true, y_pred, print_ret=False):
     from scipy.optimize import linear_sum_assignment
 
@@ -18,6 +36,92 @@ def cluster_acc(y_true, y_pred, print_ret=False):
     if print_ret:
         print("Fit acc: ", acc)
     return acc
+        
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = len(target)
+    # values, indices = input.topk(k, dim=1, largest=True, sorted=True)
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].flatten().float().sum(0)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
+
+def get_auroc_curve(known, novel, method=None):
+    tp, fp = dict(), dict()
+    fpr_at_tpr95 = dict()
+
+    known.sort()
+    novel.sort()
+
+    end = np.max([np.max(known), np.max(novel)])
+    start = np.min([np.min(known),np.min(novel)])
+
+    all = np.concatenate((known, novel))
+    all.sort()
+
+    num_k = known.shape[0]
+    num_n = novel.shape[0]
+
+    if method == 'row':
+        threshold = -0.5
+    else:
+        threshold = known[round(0.05 * num_k)]
+
+    tp = -np.ones([num_k+num_n+1], dtype=int)
+    fp = -np.ones([num_k+num_n+1], dtype=int)
+    tp[0], fp[0] = num_k, num_n
+    k, n = 0, 0
+    for l in range(num_k+num_n):
+        if k == num_k:
+            tp[l+1:] = tp[l]
+            fp[l+1:] = np.arange(fp[l]-1, -1, -1)
+            break
+        elif n == num_n:
+            tp[l+1:] = np.arange(tp[l]-1, -1, -1)
+            fp[l+1:] = fp[l]
+            break
+        else:
+            if novel[n] < known[k]:
+                n += 1
+                tp[l+1] = tp[l]
+                fp[l+1] = fp[l] - 1
+            else:
+                k += 1
+                tp[l+1] = tp[l] - 1
+                fp[l+1] = fp[l]
+
+    j = num_k+num_n-1
+    for l in range(num_k+num_n-1):
+        if all[j] == all[j-1]:
+            tp[j] = tp[j+1]
+            fp[j] = fp[j+1]
+        j -= 1
+
+    fpr_at_tpr95 = np.sum(novel > threshold) / float(num_n)
+
+    return tp, fp, fpr_at_tpr95
+
+
+class ArrayDataset(torch.utils.data.dataset.Dataset):
+
+    def __init__(self, features, labels=None) -> None:
+        self.features = features
+        self.labels = labels
+
+    def __getitem__(self, index):
+        if self.labels is None:
+            return self.features[index]
+        else:
+            return self.features[index], self.labels[index]
+
+    def __len__(self):
+        return len(self.features)
 
 def ysave(filename, obj, mode='wb', overwrite=True):
     if overwrite or not os.path.exists(filename):
@@ -30,10 +134,11 @@ def yload(filename, mode='rb'):
 
 def log_f(f, console=True):
     def log(msg):
-        f.write(msg)
-        f.write('\n')
+        with open(f, 'a') as file:
+            file.write(msg)
+            file.write('\n')
         if console:
-            p(msg)
+            print(msg)
     return log
 
 try:
@@ -122,5 +227,9 @@ def format_time(seconds):
 
 
 
-
+def subsample_arr(arr, size):
+    if size >= len(arr):
+        return arr
+    index = np.random.choice(range(len(arr)), size, replace=False)
+    return arr[index]
 
